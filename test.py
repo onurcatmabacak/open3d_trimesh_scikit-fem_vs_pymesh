@@ -1,29 +1,25 @@
 import open3d as o3d
 import trimesh as tri
 import numpy as np
-import skfem
 import scipy
 
 def load_mesh_trimesh(filename):
 
     return tri.load_mesh(filename)
 
-
 def load_mesh_open3d(filename):
 
     return o3d.io.read_triangle_mesh(filename)
 
-
-def save_mesh_trimesh(filename):
-
-    mesh = load_mesh_trimesh(filename) 
-    trimesh.exchange.export.export_mesh(mesh, "bunny_saved_trimesh.obj",)
-
-
 def save_mesh_open3d(filename):
 
     mesh = load_mesh_open3d(filename) 
-    o3d.io.write_triangle_mesh(mesh, "bunny_saved_open3d.obj")
+    o3d.io.write_triangle_mesh("bunny_saved_open3d.obj", mesh)
+    
+def save_mesh_trimesh(filename):
+    
+    mesh = load_mesh_trimesh(filename) 
+    trimesh.exchange.export.export_mesh(mesh, "bunny_saved_trimesh.obj",)
 
 
 def open3d_wireframe(filename):
@@ -31,71 +27,22 @@ def open3d_wireframe(filename):
     mesh = load_mesh_open3d(filename) 
     wireframe = o3d.geometry.LineSet.create_from_triangle_mesh(mesh)
     o3d.visualization.draw_geometries([wireframe])
-
-
-def trimesh_to_open3d(filename, classification=True):
-
-    # To load and clean up mesh - "remove vertices that share position"
-
-    classification = False
-    if classification:
-        mesh_ = tri.load_mesh(filename, process=True)
-        mesh_.remove_duplicate_faces()
-    else:
-        mesh_ = tri.load_mesh(filename, process=False)
-        mesh = o3d.geometry.TriangleMesh()
-        mesh.vertices = o3d.utility.Vector3dVector(mesh_.vertices)
-        mesh.triangles = o3d.utility.Vector3iVector(mesh_.faces)
-        mesh.compute_vertex_normals()
-
-    return mesh
-
-
-def open3d_to_trimesh(filename):
-
-    mesh = load_mesh_open3d(filename)
-    triangle_normals = mesh.compute_triangle_normals() 
-    vertex_normals = mesh.compute_vertex_normals()
-    mesh = tri.Trimesh(vertices=mesh.vertices,faces=mesh.triangles, \
-    triangle_normals=triangle_normals, vertex_normals=vertex_normals)
-
-    return mesh
+    
 
 def tetrahedral_mesh(filename):
 
     mesh = load_mesh_open3d(filename)
     mesh.compute_vertex_normals()
-    pcd = mesh.sample_points_poisson_disk(3000)
+    pcd = mesh.sample_points_poisson_disk(10000)
     tetramesh = o3d.geometry.TetraMesh.create_from_point_cloud(pcd)
     
-    return tetramesh
-
-
-
-
-def trimesh_to_open3d(filename, classification=True):
-
-    # To load and clean up mesh - "remove vertices that share position"
-
-	classification = False
-	if classification:
-		mesh_ = tri.load_mesh(filename, process=True)
-		mesh_.remove_duplicate_faces()
-	else:
-		mesh_ = tri.load_mesh(filename, process=False)
-		mesh = o3d.geometry.TriangleMesh()
-		mesh.vertices = o3d.utility.Vector3dVector(mesh_.vertices)
-		mesh.triangles = o3d.utility.Vector3iVector(mesh_.faces)
-		mesh.compute_vertex_normals()
+    print(tetramesh)
+    o3d.visualization.draw_geometries([pcd, mesh], mesh_show_back_face=True)
 		
-		o3d.visualization.draw_geometries([mesh])
-		
-		return mesh
-		
-def trimesh_to_open3d_as_open(filename):
+def trimesh_to_open3d(filename):
 
 	mesh = tri.load_mesh(filename)
-	print(tri.base.Trimesh.as_open3d(mesh))
+	print(mesh.as_open3d)
 		
 def form_mesh_open3d(filename): 
 
@@ -104,6 +51,7 @@ def form_mesh_open3d(filename):
 	mesh.vertices = o3d.utility.Vector3dVector(mesh_tri.vertices)
 	mesh.triangles = o3d.utility.Vector3iVector(mesh_tri.faces)
 	mesh.compute_vertex_normals()
+	mesh.compute_triangle_normals()
 	print(mesh.get_axis_aligned_bounding_box())
 	#print(mesh.is_self_intersecting())
 
@@ -111,7 +59,59 @@ def form_mesh_open3d(filename):
 
 	o3d.visualization.draw_geometries([mesh3d])
     
+def convert_open3d_to_trimesh(mesh_open3d):
+
+	mesh_open3d.compute_vertex_normals()
+	mesh_open3d.compute_triangle_normals()
+	
+	print( np.asarray(mesh_open3d.vertex_normals), np.asarray(mesh_open3d.triangle_normals) )
+	
+	mesh_tri = tri.base.Trimesh(vertices=np.asarray(mesh_open3d.vertices), faces=np.asarray(mesh_open3d.triangles), vertex_normals=np.asarray(mesh_open3d.vertex_normals), face_normals=np.asarray(mesh_open3d.triangle_normals))
+	return mesh_tri
     
+def triangle_surface_area(filename):
+
+	mesh_open3d = load_mesh_open3d(filename)
+	mesh_open3d.compute_vertex_normals()
+	mesh_open3d.compute_triangle_normals()
+
+	mesh_tri = convert_open3d_to_trimesh(mesh_open3d)
+	
+	return mesh_tri.area_faces
+    
+    
+def face_centers(filename):
+
+	mesh_open3d = load_mesh_open3d(filename)
+	mesh = convert_open3d_to_trimesh(mesh_open3d)
+	return mesh.triangles_center
+    
+    
+def vertex_gaussian_curvature(filename, radius):
+
+	mesh_open3d = load_mesh_open3d(filename)
+	mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	gauss = tri.curvature.discrete_gaussian_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius)
+	
+	print(gauss)
+	
+	return gauss
+
+def vertex_mean_curvature(filename, radius):	
+	
+	mesh_open3d = load_mesh_open3d(filename)
+	mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	mean = tri.curvature.discrete_mean_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius) 
+
+	print(mean)
+
+	return mean
+	
+	
+
+	
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
 #save_mesh_trimesh(filename)
@@ -120,5 +120,51 @@ filename = "bunny.obj"
 #trimesh_to_open3d(filename, classification=True)
 #delete_get_set_attributes_open3d(filename)
 #trimesh_to_open3d_as_open(filename)
-form_mesh_open3d(filename)    
-    
+#form_mesh_open3d(filename)
+
+#triangle_surface_area(filename)
+#trimesh_to_open3d_as_open(filename)
+#face_centers(filename)
+
+#vertex_gaussian_curvature(filename, 0.05)
+#vertex_mean_curvature(filename, 0.05)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
