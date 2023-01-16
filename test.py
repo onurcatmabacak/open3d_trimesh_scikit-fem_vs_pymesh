@@ -109,9 +109,14 @@ def vertex_mean_curvature(filename, radius):
 
 	return mean
 	
-	
+def boundary_edges(filename):
 
-	
+	mesh_open3d = load_mesh_open3d(filename)
+	mesh = convert_open3d_to_trimesh(mesh_open3d)
+	unique_edges = mesh.edges[tri.grouping.group_rows(mesh.edges_sorted, require_count=1)]
+
+	print(unique_edges)
+
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
 #save_mesh_trimesh(filename)
@@ -129,7 +134,9 @@ filename = "bunny.obj"
 #vertex_gaussian_curvature(filename, 0.05)
 #vertex_mean_curvature(filename, 0.05)
 
+#boundary_edges(filename)
 
+integrate()
 
 
 
