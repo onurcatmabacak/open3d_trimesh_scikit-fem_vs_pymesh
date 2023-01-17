@@ -2,6 +2,11 @@ import open3d as o3d
 import trimesh as tri
 import numpy as np
 import scipy
+import skfem
+from skfem import *
+from skfem.models.poisson import vector_laplace, mass, laplace
+from skfem.models.poisson import vector_laplace, mass, laplace
+from skfem.models.general import divergence, rot
 
 def load_mesh_trimesh(filename):
 
@@ -94,8 +99,7 @@ def vertex_gaussian_curvature(filename, radius):
 
 	gauss = tri.curvature.discrete_gaussian_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius)
 	
-	print(gauss)
-	
+	print(gauss)		
 	return gauss
 
 def vertex_mean_curvature(filename, radius):	
@@ -117,6 +121,39 @@ def boundary_edges(filename):
 
 	print(unique_edges)
 
+def scikit_fem_triangle_rearrange(triangles):
+
+	mimi = []
+
+	for i in range(len(triangles[0])):
+
+		mimi.append(triangles[:,i])
+	
+	return np.asarray(mimi)
+
+def integrate(filename, time_step):
+
+	mesh = MeshTri.load(filename)
+	print(mesh.p.T)
+	mesh.p = mesh.p.T
+	mesh.t = mesh.t.T
+	#mesh_open3d = load_mesh_open3d(filename)
+	#print(mesh.p, scikit_fem_triangle_rearrange(mesh.t))
+
+	element = {'u': ElementVector(ElementTriP2()),
+			'p': ElementTriP1()}
+	basis = {variable: Basis(mesh, e, intorder=3)
+			for variable, e in element.items()}
+
+	A = asm(vector_laplace, basis['u'])
+	B = asm(divergence, basis['u'], basis['p'])
+	C = asm(mass, basis['p'])
+
+	print( C )
+
+	quit()
+	
+
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
 #save_mesh_trimesh(filename)
@@ -136,42 +173,4 @@ filename = "bunny.obj"
 
 #boundary_edges(filename)
 
-integrate()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+integrate(filename, time_step=0.5)
