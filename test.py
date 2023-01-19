@@ -153,6 +153,87 @@ def integrate(filename, time_step):
 
 	quit()
 	
+def get_boundary_face_indices(filename):
+
+	mesh = load_mesh_trimesh(filename)
+
+	index = tri.grouping.group_rows(mesh.edges_sorted, require_count=1)
+	boundary_vertices = np.unique(mesh.edges[index].flatten())
+	boundary_faces = mesh.faces[mesh.edges_face[index]]
+	boundary_face_indices = np.where(np.in1d(mesh.faces, boundary_faces))[0]
+	print(boundary_face_indices)
+
+def get_edge_lengths(vertices, faces):
+    v1 = vertices[faces[:, 0]]
+    v2 = vertices[faces[:, 1]]
+    v3 = vertices[faces[:, 2]]
+
+    length1 = np.linalg.norm(v2 - v3, axis=1)
+    length2 = np.linalg.norm(v1 - v3, axis=1)
+    length3 = np.linalg.norm(v1 - v2, axis=1)
+
+    return np.array([length1, length2, length3]).T
+
+def get_signed_volume(filename):
+	"""
+	function to get the signed volume of  3D MESH. This is based on the following formula
+	Args:
+		mesh:
+
+	Returns:
+
+	"""
+	mesh = load_mesh_trimesh(filename)
+	face_areas = mesh.area_faces
+	face_centroids = mesh.triangles_center.reshape((-1, 3))
+	face_normals = mesh.face_normals.reshape((-1, 3))
+	product_barycenter_normal = np.sum(face_centroids[:, 0] * face_normals[:, 0])  # , axis=1)
+	return 1 / 6 * (np.sum(product_barycenter_normal * face_areas))
+
+def get_interior_angles(vertices, faces):
+    # numpy (n_triangles, 3) array of edge lengths
+    edge_lengths = get_edge_lengths(vertices, faces)
+
+    # Apply cosine law
+    a1 = apply_cosine_law(edge_lengths[:, 0], edge_lengths[:, 1], edge_lengths[:, 2])
+    a2 = apply_cosine_law(edge_lengths[:, 1], edge_lengths[:, 0], edge_lengths[:, 2])
+    a3 = apply_cosine_law(edge_lengths[:, 2], edge_lengths[:, 0], edge_lengths[:, 1])
+
+    return np.rad2deg(np.array([a1, a2, a3]).T)
+
+def apply_cosine_law(a: np.array, b: np.array, c: np.array):
+    """
+    Args:
+        a:
+        b:
+        c:
+
+    Returns:
+
+    """
+    return np.arccos((b**2 + c**2 - a**2) / (2 * b * c))
+
+def getHullStats(hull):
+    # convenience function to get hull stats
+    hullStats = dict()
+    geometry = dict()
+    hull.add_attribute(pymesh_constants.FACE_AREA)
+    face_areas = hull.get_attribute(pymesh_constants.FACE_AREA)
+
+    hullStats["is_closed"] = hull.is_closed()
+    hullStats["is_oriented"] = hull.is_oriented()
+
+    # y is height, x is width and z is depth
+    bbox = hull.bbox
+    geometry["width"] = bbox[1][0] - bbox[0][0]
+    geometry["height"] = bbox[1][1] - bbox[0][1]
+    geometry["depth"] = bbox[1][2] - bbox[0][2]
+    geometry["area"] = np.sum(face_areas)
+    geometry["volume"] = hull.volume
+    geometry["centroid"] = 0.5 * (bbox[0] + bbox[1])
+    hullStats["geometry"] = geometry
+
+    return hullStats
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -173,4 +254,6 @@ filename = "bunny.obj"
 
 #boundary_edges(filename)
 
-integrate(filename, time_step=0.5)
+#integrate(filename, time_step=0.5)
+
+# functions in wpm pymesh utils
