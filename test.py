@@ -214,26 +214,52 @@ def apply_cosine_law(a: np.array, b: np.array, c: np.array):
     return np.arccos((b**2 + c**2 - a**2) / (2 * b * c))
 
 def getHullStats(hull):
-    # convenience function to get hull stats
-    hullStats = dict()
-    geometry = dict()
-    hull.add_attribute(pymesh_constants.FACE_AREA)
-    face_areas = hull.get_attribute(pymesh_constants.FACE_AREA)
+	# convenience function to get hull stats
+	hullStats = dict()
+	geometry = dict()
+	face_areas = hull.area_faces
 
-    hullStats["is_closed"] = hull.is_closed()
-    hullStats["is_oriented"] = hull.is_oriented()
+	hullStats["is_closed"] = hull.is_watertight
+	hullStats["is_oriented"] = True #problem her, hull.is_oriented()
 
-    # y is height, x is width and z is depth
-    bbox = hull.bbox
-    geometry["width"] = bbox[1][0] - bbox[0][0]
-    geometry["height"] = bbox[1][1] - bbox[0][1]
-    geometry["depth"] = bbox[1][2] - bbox[0][2]
-    geometry["area"] = np.sum(face_areas)
-    geometry["volume"] = hull.volume
-    geometry["centroid"] = 0.5 * (bbox[0] + bbox[1])
-    hullStats["geometry"] = geometry
+	# y is height, x is width and z is depth
+	bbox = hull.bounds
+	print(bbox)
+	geometry["width"] = bbox[1][0] - bbox[0][0]
+	geometry["height"] = bbox[1][1] - bbox[0][1]
+	geometry["depth"] = bbox[1][2] - bbox[0][2]
+	geometry["area"] = np.sum(face_areas)
+	geometry["volume"] = hull.volume
+	geometry["centroid"] = 0.5 * (bbox[0] + bbox[1])
+	hullStats["geometry"] = geometry
 
-    return hullStats
+	return hullStats
+
+def scaleHull(hull, scale):
+	# provide scale with array of x,y,z scale.
+	# Example: Scale factor 2 => [2,2,2]
+	print(hull.voxelized)
+	return tri.Trimesh(hull.vertices * np.array(scale), hull.faces) #, hull.voxelized)
+
+def vertex_gaussian_curvature(mesh, radius):
+
+	#mesh_open3d = load_mesh_open3d(filename)
+	#mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	gaussian_curvature = tri.curvature.discrete_gaussian_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius)
+	
+	#print(gauss)		
+	return gaussian_curvature
+
+def get_smoothed(mesh, vertex_curvature):
+
+	n = len(mesh.vertices)
+	result = np.zeros(n)
+	for j in range(n):
+		r = vertex_curvature[j] + vertex_curvature[mesh.vertex_neighbors[j]].mean()
+		r *= 0.5
+		result[j] = r
+	return result
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -257,3 +283,8 @@ filename = "bunny.obj"
 #integrate(filename, time_step=0.5)
 
 # functions in wpm pymesh utils
+mesh = load_mesh_trimesh(filename)
+#print( getHullStats(mesh.convex_hull) )
+#print( scaleHull(mesh.convex_hull, 2.0) )
+vertex_curvature = vertex_gaussian_curvature(mesh, 1.0)
+print( get_smoothed(mesh, vertex_curvature) )
