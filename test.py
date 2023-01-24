@@ -7,7 +7,8 @@ from skfem import *
 from skfem.models.poisson import vector_laplace, mass, laplace
 from skfem.models.poisson import vector_laplace, mass, laplace
 from skfem.models.general import divergence, rot
-
+import networkx as nx
+from math import *
 def load_mesh_trimesh(filename):
 
     return tri.load_mesh(filename)
@@ -251,6 +252,15 @@ def vertex_gaussian_curvature(mesh, radius):
 	#print(gauss)		
 	return gaussian_curvature
 
+def vertex_mean_curvature(mesh, radius):	
+	
+	#mesh_open3d = load_mesh_open3d(filename)
+	#mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	mean_curvature = tri.curvature.discrete_mean_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius) 
+
+	return mean_curvature
+
 def get_smoothed(mesh, vertex_curvature):
 
 	n = len(mesh.vertices)
@@ -260,6 +270,128 @@ def get_smoothed(mesh, vertex_curvature):
 		r *= 0.5
 		result[j] = r
 	return result
+
+def filter_small_radii(inds, mesh, percentage=0.9, filter=2):
+	from neckpinch import get_all_neighbours # where is this function??
+
+	#mesh.enable_connectivity()
+	flags = np.zeros(len(mesh.vertices))
+	inds0 = np.array(inds)
+	flags[inds0] = 1
+	result = []
+	tot = 0
+	for i in inds0:
+		neighbours = get_all_neighbours(mesh, i, filter)
+		tot += len(neighbours)
+		# neighbours = mesh.get_vertex_adjacent_vertices(i)
+		a = np.sum(flags[neighbours] / len(neighbours))
+		if a > percentage:
+			result.append(i)
+	logging.info(f"#neighbours={tot / len(inds0)}")
+	return result
+
+def boundary_edges(mesh):
+
+	#mesh_open3d = load_mesh_open3d(filename)
+	#mesh = convert_open3d_to_trimesh(mesh_open3d)
+	unique_edges = mesh.edges[tri.grouping.group_rows(mesh.edges_sorted, require_count=1)]
+
+	return unique_edges
+
+def get_small_radii(mesh, radius, filter=2, percentage=0.9):
+	gauss_vertex = vertex_gaussian_curvature(mesh, radius)
+	mean_vertex = vertex_mean_curvature(mesh, radius)
+	g = gauss_vertex
+	# g = get_smoothed(pm_mesh, g)
+	h = mean_vertex * 2
+	# h = get_smoothed(pm_mesh, h)
+	e = h * h - 4 * g
+	bd_edges = boundary_edges(mesh)
+	bd_vertices = np.unique(bd_edges.ravel())
+	n_bounds = len(bd_vertices)
+	e[bd_vertices] = 0
+	inds = np.where(e < 0)[0]
+	# logging.info(f"{h[inds].max()},{g[inds].max()},{g[inds].min()}")
+	# logging.info(f"e < 0 : #={len(inds)}")
+	e[inds] = 0
+	e = np.sqrt(e)
+	k1 = 0.5 * (h + e)
+	k2 = 0.5 * (h - e)
+
+	ind_gauss_negative = np.where(g < 0)[0]
+	negative = len(ind_gauss_negative) - n_bounds
+	rest = len(g) - n_bounds
+	#logging.info(f"percentage of negative curvature {negative / rest}")
+	print(f"percentage of negative curvature {negative / rest}")
+	# diff_gauss = np.abs(k1*k2 - g)[ind_gauss_negative]
+	# print("diff_gauss", np.quantile(diff_gauss,.9), diff_gauss.mean(), diff_gauss.max(), diff_gauss.min())
+	eps = 1e-5
+	r1 = 1.0 / (eps + np.abs(k1))
+	r2 = 1.0 / (eps + np.abs(k2))
+	rmin = np.min((r1, r2), axis=0)
+	rmax = np.max((r1, r2), axis=0)
+	ind0 = np.where((rmin < radius) & (g < 0) & (rmin < 4 * rmax))[0]
+	#if filter:
+	#    ind0 = filter_small_radii(ind0, pm_mesh, filter=filter, percentage=percentage)
+	return ind0
+
+def not_hyperbolic(mesh):
+	bd_edges = boundary_edges(mesh)
+	bd_vertices = np.unique(bd_edges.ravel())
+
+	points = mesh.bounding_box_oriented.sample_volume(count=1000)
+	_, radius_all = tri.proximity.max_tangent_sphere(mesh, points)
+	radius = np.max(radius_all)
+
+	g = np.array(vertex_gaussian_curvature(mesh, radius))
+	g[bd_vertices] = 0
+	ind_gauss_negative = np.where(g > 1e-3)[0]
+	return ind_gauss_negative
+
+def form_mesh_trimesh(vertices, faces):
+	return tri.base.Trimesh(vertices=vertices, faces=faces)
+
+def normalize_mesh(vertices, faces):
+	centroid = np.mean(vertices, axis=0)
+	vertices -= centroid
+	radii = norm(vertices, axis=1)
+	vertices /= np.amax(radii)
+	return form_mesh_trimesh(vertices, faces)
+
+
+def print2outershell(what):
+	sys.__stdout__.write(f"{what}\n")
+	sys.__stdout__.flush()
+
+
+def integrate(mesh, time_step, L):
+	from mindboggle import computeAB
+	from scipy.sparse import linalg as sla
+	from mindboggle import fem_laplacian
+
+	print(mesh.vertices)
+	vertices = mesh.vertices
+	faces = mesh.faces
+
+	L, M = computeAB(vertices, faces)
+	L = fem_laplacian(vertices, faces, spectrum_size=3, normalization="area", verbose=False)
+	print(L)
+	quit()
+	bbox_min, bbox_max = mesh.bbox
+	s = np.amax(bbox_max - bbox_min)  # why?
+	S = M + (time_step * s) * L
+
+	lu = sla.splu(A)
+	mv = M * mesh.vertices
+	vertices = lu.solve(mv)
+
+	return vertices, mesh.faces
+
+# def get_vtk_curvature(mesh):
+#     vtk_mesh = wtv.tvtk_curvatures.get_poly_data_surface_with_curvatures(mesh.vertices, mesh.faces)
+#     scs = vtk_mesh.point_data.scalars
+#     return np.array(scs)
+
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -286,5 +418,10 @@ filename = "bunny.obj"
 mesh = load_mesh_trimesh(filename)
 #print( getHullStats(mesh.convex_hull) )
 #print( scaleHull(mesh.convex_hull, 2.0) )
-vertex_curvature = vertex_gaussian_curvature(mesh, 1.0)
-print( get_smoothed(mesh, vertex_curvature) )
+#vertex_curvature = vertex_gaussian_curvature(mesh, 1.0)
+#print( get_smoothed(mesh, vertex_curvature) )
+#print( get_small_radii(mesh, radius=1.0, filter=2, percentage=0.9) )
+#print( not_hyperbolic(mesh) )
+
+print( integrate(mesh, time_step=0.5, L=0.1) )
+
