@@ -131,28 +131,6 @@ def scikit_fem_triangle_rearrange(triangles):
 		mimi.append(triangles[:,i])
 	
 	return np.asarray(mimi)
-
-def integrate(filename, time_step):
-
-	mesh = MeshTri.load(filename)
-	print(mesh.p.T)
-	mesh.p = mesh.p.T
-	mesh.t = mesh.t.T
-	#mesh_open3d = load_mesh_open3d(filename)
-	#print(mesh.p, scikit_fem_triangle_rearrange(mesh.t))
-
-	element = {'u': ElementVector(ElementTriP2()),
-			'p': ElementTriP1()}
-	basis = {variable: Basis(mesh, e, intorder=3)
-			for variable, e in element.items()}
-
-	A = asm(vector_laplace, basis['u'])
-	B = asm(divergence, basis['u'], basis['p'])
-	C = asm(mass, basis['p'])
-
-	print( C )
-
-	quit()
 	
 def get_boundary_face_indices(filename):
 
@@ -363,25 +341,78 @@ def print2outershell(what):
 	sys.__stdout__.write(f"{what}\n")
 	sys.__stdout__.flush()
 
+def get_normalized_laplacian(adjacency_matrix):
+	import scipy.sparse as spsp
+	# Calculate diagonal matrix of node degrees.
+	degree = spsp.dia_matrix((adjacency_matrix.sum(axis=0), np.array([0])), shape=adjacency_matrix.shape)
+	degree = degree.tocsr()
+
+	# Calculate sparse graph Laplacian.
+	adjacency_matrix = spsp.csr_matrix(-adjacency_matrix + degree, dtype=np.float64)
+
+	# Calculate inverse square root of diagonal matrix of node degrees.
+	degree.data = np.real(1/np.sqrt(degree.data))
+
+	# Calculate sparse normalized graph Laplacian.
+	normalized_laplacian = degree*adjacency_matrix*degree
+
+	return normalized_laplacian
+
+def get_unnormalized_laplacian(adjacency_matrix):
+	import scipy.sparse as spsp
+	# Calculate diagonal matrix of node degrees.
+	degree = spsp.dia_matrix((adjacency_matrix.sum(axis=0), np.array([0])), shape=adjacency_matrix.shape)
+	degree = degree.tocsr()
+
+	# Calculate sparse graph Laplacian.
+	laplacian = spsp.csr_matrix(-adjacency_matrix + degree, dtype=np.float64)
+
+	return laplacian 
+
+def get_random_walk_laplacian(adjacency_matrix):
+	import scipy.sparse as spsp
+	# Calculate diagonal matrix of node degrees.
+	degree = spsp.dia_matrix((adjacency_matrix.sum(axis=0), np.array([0])), shape=adjacency_matrix.shape)
+	degree = degree.tocsr()
+
+	# Calculate sparse graph Laplacian.
+	adjacency_matrix = spsp.csr_matrix(-adjacency_matrix + degree, dtype=np.float64)
+
+	# Calculate inverse of diagonal matrix of node degrees.
+	degree.data = np.real(1/degree.data)
+
+	# Calculate sparse normalized graph Laplacian.
+	random_walk_laplacian = degree*adjacency_matrix
+
+	return random_walk_laplacian 
 
 def integrate(mesh, time_step, L):
-	from mindboggle import computeAB
+
 	from scipy.sparse import linalg as sla
-	from mindboggle import fem_laplacian
+	from mindboggle.shapes.laplace_beltrami import fem_laplacian
+	from mindboggle.shapes.laplace_beltrami import computeAB
+	from mindboggle.guts.graph import graph_laplacian
+	import networkx as nx
 
 	print(mesh.vertices)
 	vertices = mesh.vertices
 	faces = mesh.faces
 
-	L, M = computeAB(vertices, faces)
-	L = fem_laplacian(vertices, faces, spectrum_size=3, normalization="area", verbose=False)
+	graph = tri.graph.vertex_adjacency_graph(mesh)
+	adjacency_matrix = nx.adjacency_matrix(graph)
+	#L = get_normalized_laplacian(adjacency_matrix)
+	L = get_random_walk_laplacian(adjacency_matrix)
 	print(L)
-	quit()
-	bbox_min, bbox_max = mesh.bbox
+	#quit()
+	_, M = computeAB(vertices, faces)
+	#L = fem_laplacian(vertices, faces, spectrum_size=mesh.vertices.shape[0]) #, normalization="area", verbose=False)
+	#L = csgraph.laplacian(vertices)
+
+	bbox_min, bbox_max = mesh.bounds
 	s = np.amax(bbox_max - bbox_min)  # why?
 	S = M + (time_step * s) * L
-
-	lu = sla.splu(A)
+	
+	lu = sla.splu(S)
 	mv = M * mesh.vertices
 	vertices = lu.solve(mv)
 
@@ -423,5 +454,5 @@ mesh = load_mesh_trimesh(filename)
 #print( get_small_radii(mesh, radius=1.0, filter=2, percentage=0.9) )
 #print( not_hyperbolic(mesh) )
 
-print( integrate(mesh, time_step=0.5, L=0.1) )
+print( integrate(mesh, time_step=0.1, L=0.1) )
 
