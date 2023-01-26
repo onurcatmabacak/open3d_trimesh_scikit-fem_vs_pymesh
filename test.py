@@ -2,13 +2,9 @@ import open3d as o3d
 import trimesh as tri
 import numpy as np
 import scipy
-import skfem
-from skfem import *
-from skfem.models.poisson import vector_laplace, mass, laplace
-from skfem.models.poisson import vector_laplace, mass, laplace
-from skfem.models.general import divergence, rot
 import networkx as nx
 from math import *
+
 def load_mesh_trimesh(filename):
 
     return tri.load_mesh(filename)
@@ -91,28 +87,6 @@ def face_centers(filename):
 	mesh_open3d = load_mesh_open3d(filename)
 	mesh = convert_open3d_to_trimesh(mesh_open3d)
 	return mesh.triangles_center
-    
-    
-def vertex_gaussian_curvature(filename, radius):
-
-	mesh_open3d = load_mesh_open3d(filename)
-	mesh = convert_open3d_to_trimesh(mesh_open3d)
-
-	gauss = tri.curvature.discrete_gaussian_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius)
-	
-	print(gauss)		
-	return gauss
-
-def vertex_mean_curvature(filename, radius):	
-	
-	mesh_open3d = load_mesh_open3d(filename)
-	mesh = convert_open3d_to_trimesh(mesh_open3d)
-
-	mean = tri.curvature.discrete_mean_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius) 
-
-	print(mean)
-
-	return mean
 	
 def boundary_edges(filename):
 
@@ -199,7 +173,17 @@ def getHullStats(hull):
 	face_areas = hull.area_faces
 
 	hullStats["is_closed"] = hull.is_watertight
-	hullStats["is_oriented"] = True #problem her, hull.is_oriented()
+
+	"""
+	Find and fix problems with self.face_normals and self.faces winding direction.
+
+	For face normals ensure that vectors are consistently pointed outwards, and that self.faces is wound in the correct direction for all connected components.
+
+	Parameters
+	multibody (None or bool) – Fix normals across multiple bodies if None automatically pick from body_count
+	"""
+	hull.fix_normals()
+	hullStats["is_oriented"] = True #face normal orientation is fixed
 
 	# y is height, x is width and z is depth
 	bbox = hull.bounds
@@ -220,20 +204,30 @@ def scaleHull(hull, scale):
 	print(hull.voxelized)
 	return tri.Trimesh(hull.vertices * np.array(scale), hull.faces) #, hull.voxelized)
 
-def vertex_gaussian_curvature(mesh, radius):
+def vertex_gaussian_curvature(mesh, radius=None):
 
 	#mesh_open3d = load_mesh_open3d(filename)
 	#mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	if radius == None:
+		points = mesh.bounding_box_oriented.sample_volume(count=1000)
+		_, radius_all = tri.proximity.max_tangent_sphere(mesh, points)
+		radius = np.max(radius_all)
 
 	gaussian_curvature = tri.curvature.discrete_gaussian_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius)
 	
 	#print(gauss)		
 	return gaussian_curvature
 
-def vertex_mean_curvature(mesh, radius):	
+def vertex_mean_curvature(mesh, radius=None):	
 	
 	#mesh_open3d = load_mesh_open3d(filename)
 	#mesh = convert_open3d_to_trimesh(mesh_open3d)
+
+	if radius == None:
+		points = mesh.bounding_box_oriented.sample_volume(count=1000)
+		_, radius_all = tri.proximity.max_tangent_sphere(mesh, points)
+		radius = np.max(radius_all)
 
 	mean_curvature = tri.curvature.discrete_mean_curvature_measure(mesh, mesh.vertices, radius)/tri.curvature.sphere_ball_intersection(1, radius) 
 
@@ -317,11 +311,7 @@ def not_hyperbolic(mesh):
 	bd_edges = boundary_edges(mesh)
 	bd_vertices = np.unique(bd_edges.ravel())
 
-	points = mesh.bounding_box_oriented.sample_volume(count=1000)
-	_, radius_all = tri.proximity.max_tangent_sphere(mesh, points)
-	radius = np.max(radius_all)
-
-	g = np.array(vertex_gaussian_curvature(mesh, radius))
+	g = np.array(vertex_gaussian_curvature(mesh))
 	g[bd_vertices] = 0
 	ind_gauss_negative = np.where(g > 1e-3)[0]
 	return ind_gauss_negative
@@ -389,7 +379,6 @@ def get_random_walk_laplacian(adjacency_matrix):
 def integrate(mesh, time_step, L):
 
 	from scipy.sparse import linalg as sla
-	from mindboggle.shapes.laplace_beltrami import fem_laplacian
 	from mindboggle.shapes.laplace_beltrami import computeAB
 	from mindboggle.guts.graph import graph_laplacian
 	import networkx as nx
@@ -411,7 +400,7 @@ def integrate(mesh, time_step, L):
 	bbox_min, bbox_max = mesh.bounds
 	s = np.amax(bbox_max - bbox_min)  # why?
 	S = M + (time_step * s) * L
-	
+
 	lu = sla.splu(S)
 	mv = M * mesh.vertices
 	vertices = lu.solve(mv)
@@ -423,6 +412,381 @@ def integrate(mesh, time_step, L):
 #     scs = vtk_mesh.point_data.scalars
 #     return np.array(scs)
 
+def print_out_stat(what, ar):
+	s = "{} mean={} max={} >80%={} >99%={}".format(
+		what, np.mean(ar), np.max(ar), np.quantile(ar, 0.8), np.quantile(ar, 0.99)
+	)
+	logging.info(s)
+
+
+def _modified_mean_curvature_flow(mesh, L, num_itrs=1, time_step=1e-3):
+	bd_edges = boundary_edges(mesh)
+	bd_vertices = np.unique(bd_edges.ravel())
+	mesh = form_mesh_trimesh(mesh.vertices, mesh.faces)
+
+	v0 = mesh.vertices
+
+	bd0 = v0[bd_vertices]
+	result = [mesh]
+	for i in range(num_itrs):
+		try:
+			# curvature = get_vtk_curvature(mesh)
+			# curvature[bd_vertices] = 0
+			# print_out_stat("mean curvature", np.abs(curvature))
+			verts, faces = integrate(mesh, time_step, L)  # Keep Laplacian constant to avoid neck pinches
+			# print(np.mean(dv), np.max(dv), np.quantile(dv,.8))
+			verts[bd_vertices] = bd0
+			dv = np.abs(verts - v0)
+			print_out_stat("vertex_diff", dv)
+			mesh = form_mesh_trimesh(mesh.vertices, mesh.faces)
+			result.append(mesh)
+			v0 = mesh.vertices
+
+		except Exception as e:
+			# error with ldlt - try again but this time with sparseLU. Does it cause seg-fault?
+			logging.error("Mean curvature flow failed at iteration %d with error %s", i, str(e))
+			time_step /= 2
+			if time_step < 1e-6:
+				return mesh
+			continue
+	return result
+
+def is_valid_mesh(mesh):
+	# bounds = mesh.boundary_vertices
+	# if len(bounds) > 0:
+	#    logging.info("mesh has boundary")
+	#    return False
+	ints = np.asarray(mesh.as_open3d.get_self_intersecting_triangles()) 
+	return mesh.as_open3d.is_edge_manifold() and mesh.as_open3d.is_vertex_manifold() and len(ints) == 0
+
+def get_narrow_tunnels(mesh, min_dist: float, tree=None):
+
+	centroids = mesh.triangles_center
+	normals = mesh.face_normal
+
+	neck_pinch_faces = {}
+
+	if not tree:
+		tree = scipy.spatial.cKDTree(centroids, leafsize=11)
+
+	inds = tree.query_ball_point(centroids, min_dist, workers=-1)
+
+	n = len(inds)
+
+	for j in range(n):
+
+		i_normals = normals[inds[j]]
+		dots = np.dot(i_normals, i_normals[0])
+		opposite = np.argmin(dots)
+		
+		if dots[opposite] < -0.9:
+		
+			already = None
+		
+			for k in inds[j]:
+				if k in neck_pinch_faces:
+					already = neck_pinch_faces[k]
+
+			if already is None:
+				already = j
+
+			for k in inds[j]:
+				neck_pinch_faces[k] = already
+
+	clusters = defaultdict(list)
+
+	for i, k in neck_pinch_faces.items():
+		clusters[k].append(i)
+
+	return clusters, tree
+
+
+def get_narrow_tunnel_vertices(mesh, min_dist: float, tree=None):
+    clusters, tree = get_narrow_tunnels(mesh, min_dist, tree)
+    result = {}
+    for k in clusters:
+        verts = []
+        for face_index in clusters[k]:
+            verts.extend(mesh.faces[face_index])
+        verts = list(set(verts))
+        result[k] = verts
+    return result, tree
+
+
+def mesh2mesh_distance(mesh, min_dist: float):
+
+	centroids = mesh.triangles_center
+
+	clusters, tree = get_narrow_tunnels(mesh, min_dist)
+	points = []
+
+	logging.info(f"#clusters = {len(clusters)} with width < {min_dist}")
+
+	for k in clusters:
+		# print(k, clusters[k])
+		points.extend(centroids[clusters[k]])
+
+	return len(clusters), points
+
+
+def euler(mesh):
+    np = len(mesh.vertices)
+    nf = len(mesh.faces)
+    ne = (3 * nf + len(boundary_edges(mesh))) / 2
+    euler = np + nf - ne
+    return euler
+
+def genus(mesh):
+    return 1 - euler(mesh) / 2
+
+
+def mesh_statistics(mesh, calc_genus=True, distances=[]):
+	# outdated statistics
+	# tr = context_manager.ResultsManager()
+
+	# bd_edges = boundary_edges(mesh)
+	# bd_vertices = np.unique(bd_edges.ravel())
+
+	def zero_nan(what, replace_value=0):
+		what[~np.isfinite(what)] = replace_value
+
+	mesh.area_faces
+	gauss = vertex_gaussian_curvature(mesh)
+	# tr.area_of_smooth_contour = np.sum(mesh.area_faces)
+
+	zero_nan(gauss)
+	bd_edges = boundary_edges(mesh)
+	bd_vertices = np.unique(bd_edges.ravel())
+	gauss[bd_vertices] = 0
+
+	# tr.gaussian_av = np.mean(gauss)
+	mean = vertex_mean_curvature(mesh)
+	mean[bd_vertices] = 0
+	zero_nan(mean)
+	mc = np.abs(mean)
+	# tr.absmean_av = np.mean(mc)  # /result["gaussian_integral"]
+	# tr.absmean_q0p9 = np.quantile(mc, .9)
+	# tr.absmean_q0p5 = np.quantile(mc, .5)
+	# if calc_genus:
+	# tr.genus = genus(mesh)
+	# for r in distances:
+	#     anz, points = mesh2mesh_distance(mesh, r)
+	#     result[f"anz_narrow_clusters_{r}"] = anz
+
+	gauss_vertex = vertex_gaussian_curvature(mesh)
+	g = gauss_vertex
+	bd_edges = boundary_edges(mesh)
+	bd_vertices = np.unique(bd_edges.ravel())
+	n_bounds = len(bd_vertices)
+	ind_gauss_negative = np.where(g < 0)[0]
+	negative = len(ind_gauss_negative) - n_bounds
+	rest = len(g) - n_bounds
+	# tr.percentage_of_negative_curvature = negative / rest
+	# logging.info(f"percentage of negative curvature {tr.percentage_of_negative_curvature}")
+
+
+def test_mesh_integrity(mesh):
+	'''should be renamed to test_surface'''
+	mesh_statistics(mesh)
+	tr = context_manager.ResultsManager()
+
+	mesh.fix_normals()
+	tr.validation_tests_stats.subtest_self_intersection = np.asarray(mesh.as_open3d.get_self_intersecting_triangles())
+	tr.validation_tests_stats.subtest_is_vertex_manifold = mesh.as_open3d.is_vertex_manifold()
+	tr.validation_tests_stats.subtest_is_edge_manifold = mesh.as_open3d.is_edge_manifold()
+	tr.validation_tests_stats.subtest_is_oriented = True
+
+
+def test_mesh_printability(mesh, case_config):
+
+    test_mesh_integrity(mesh)
+    
+	tr = context_manager.ResultsManager()
+    
+	min_dist = case_config.MIN_CHANNEL
+    
+	anz, points = mesh2mesh_distance(mesh, min_dist)
+    
+	tr.print_stats.anz_narrow_clusters = anz
+    tr.print_stats.face_centroids_narrow = points
+    
+	good = True
+    
+	if len(tr.validation_tests_stats.subtest_self_intersection) > 0:
+        good = False
+
+    if not tr.validation_tests_stats.subtest_has_no_outer_component:
+        good = False
+
+    for val in (
+        tr.validation_tests_stats.subtest_is_vertex_manifold,
+        tr.validation_tests_stats.subtest_is_edge_manifold,
+        tr.validation_tests_stats.subtest_is_oriented,
+    ):
+        if not val:
+            good = False
+
+    if (
+        tr.validation_tests_stats.subtest_has_no_degenerated_triangle_angle
+        or tr.validation_tests_stats.subtest_has_no_degenerated_triangle_area
+    ):
+        good = False
+		
+    if tr.print_stats.anz_narrow_clusters:
+        good = False
+
+    tr.print_stats.is_mesh_ok = good
+    # radius = smoothing_tweaks.MIN_RADIUS_STOP_LAPLACIAN
+    # result["_stop_smoothing_radius"] = mesh.vertices[get_small_radii(mesh, radius)]
+    # radius = smoothing_tweaks.MIN_RADIUS_GROW
+    # radius = 1
+    # result["_grow_radius"] = mesh.vertices[get_small_radii(mesh, radius, percentage=.4, filter=3)]
+    tr.print_stats.non_hyperbolic = mesh.vertices[not_hyperbolic(mesh)]
+
+
+def split_solid_surface_along_surface(solid_surface, surface):
+    '''
+    Function splits the solid_surface into two parts:
+        - faces and vertices that have normals pointing in approximatly the same direction as the surfaces are added to one new mesh
+        - faces and vertices that have normals pointing in approximatly the opposite direction as the surface are added to another new mesh
+    ONLY WORKS PROPERLY ON BOUNDARY IF SURFACE CUTS THROUGH SOLID SURFACE
+    Args:
+        solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
+        surface {PyMesh Mesh}: "2d" triangulated mesh.
+
+    Returns:
+        Both new meshes
+    '''
+    # Compute face normals of meshes
+    solid_surface.add_attribute(pymesh_constants.FACE_NORMAL)
+    solid_surface.add_attribute(pymesh_constants.FACE_CIRCUMCENTER)
+
+    surface.add_attribute(pymesh_constants.FACE_NORMAL)
+    surface.add_attribute(pymesh_constants.FACE_CIRCUMCENTER)
+
+    # Reshape to get dimensions: number of faces x 3
+    solid_face_dimensions = np.shape(solid_surface.faces)
+
+    solid_normals = np.reshape(solid_surface.get_attribute(pymesh_constants.FACE_NORMAL), solid_face_dimensions)
+    plane_normals = np.reshape(surface.get_attribute(pymesh_constants.FACE_NORMAL), np.shape(surface.faces))
+    solid_face_circumcenters = np.reshape(
+        solid_surface.get_attribute(pymesh_constants.FACE_CIRCUMCENTER), solid_face_dimensions
+    )
+    solid_circumcenters = np.reshape(surface.get_attribute(pymesh_constants.FACE_CIRCUMCENTER), np.shape(surface.faces))
+
+    squared_distances, face_indices, closest_points = pm.distance_to_mesh(surface, solid_face_circumcenters)
+
+    top_side_faces = []
+    bottom_side_faces = []
+    for face in range(solid_face_dimensions[0]):
+        vector_solid_surface_center_to_surface_center = (
+            solid_face_circumcenters[face] - solid_circumcenters[face_indices[face]]
+        )
+        normal_scalar_product = (
+            vector_solid_surface_center_to_surface_center
+            / np.linalg.norm(vector_solid_surface_center_to_surface_center)
+        ).dot(plane_normals[face_indices[face]])
+        if normal_scalar_product > 0:
+            top_side_faces.append(face)
+        elif normal_scalar_product < 0:
+            bottom_side_faces.append(face)
+        else:
+            # orthogonal
+            pass
+
+    # extract submesh. The 0 means that no faces other than the saved indices are extracted.
+    top = pm.submesh(solid_surface, top_side_faces, 0)
+    bot = pm.submesh(solid_surface, bottom_side_faces, 0)
+
+    return bot, top
+
+
+def compute_wall_thickness_at_sample_points(solid_surface, surface, sample_points):
+    '''
+    Args:
+        solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
+        surface {PyMesh Mesh}: "2d" triangulated mesh.
+        sample_points: Numpy List of sample points. Sample points should lay on surface (e.g. vertices, midpoints, ...)
+    Returns:
+        Numpy List of dimensions: "Number of sample_points" x 1
+    '''
+    bot, top = split_solid_surface_along_surface(solid_surface, surface)
+
+    # I guess it's up for discussion if the wall width should be measured orthogonally to the mid surface or shortest distance
+    squared_distances_up, _, _ = pm.distance_to_mesh(top, sample_points)
+    squared_distances_down, _, _ = pm.distance_to_mesh(bot, sample_points)
+
+    distances_up = np.sqrt(squared_distances_up)
+    distances_down = np.sqrt(squared_distances_down)
+
+    return distances_down + distances_up
+
+
+def test_wall_thickness(solid_surface, surface):
+    sample_points = surface.vertices
+    wall_thickness = compute_wall_thickness_at_sample_points(solid_surface, surface, sample_points)
+    return wall_thickness
+
+
+
+def form_mesh(vertices, faces):
+    return pm.form_mesh(vertices, faces)
+
+
+def form_mesh_with_voxels(vertices, faces, voxels):
+    return pm.form_mesh(vertices, faces, voxels)
+
+
+def remove_isolated_vertices(mesh):
+    return pm.remove_isolated_vertices(mesh)
+
+
+def remove_duplicated_faces(mesh, fins_only):
+    return pm.remove_duplicated_faces(mesh, fins_only=fins_only)
+
+
+def remove_duplicated_vertices(mesh, tol=1e-12, importance=None):
+    return pm.remove_duplicated_vertices(mesh, tol=tol, importance=importance)
+
+
+def collapse_short_edges(mesh, eps):
+    return pm.collapse_short_edges(mesh, eps)
+
+
+def remove_obtuse_triangles(mesh, max_angle):
+    return pm.remove_obtuse_triangles(mesh, max_angle=max_angle)
+
+
+def remove_degenerated_triangles(mesh, n):
+    return pm.remove_degenerated_triangles(mesh, n)
+
+
+def load_mesh(path):
+    return pm.load_mesh(path)
+
+
+def save_mesh(filepath, mesh):
+    return pm.save_mesh(filepath, mesh)
+
+
+def tetgen():
+    return pm.tetgen()
+
+
+def detect_self_intersection(mesh):
+    return pm.detect_self_intersection(mesh)
+
+
+def separate_mesh(mesh, connectivity_type="auto"):
+    return pm.separate_mesh(mesh, connectivity_type="auto")
+
+
+def pymesh_mesh():
+    return pm.Mesh
+
+
+def get_pymesh_stats(mesh):
+    return context_manager.ResultsManager()
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -454,5 +818,6 @@ mesh = load_mesh_trimesh(filename)
 #print( get_small_radii(mesh, radius=1.0, filter=2, percentage=0.9) )
 #print( not_hyperbolic(mesh) )
 
-print( integrate(mesh, time_step=0.1, L=0.1) )
-
+#print( integrate(mesh, time_step=0.1, L=0.1) )
+#print(is_valid_mesh(mesh))
+#get_narrow_tunnels(mesh, 1.0, tree=None)
