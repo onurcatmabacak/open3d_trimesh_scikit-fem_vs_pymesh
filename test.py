@@ -599,127 +599,150 @@ def test_mesh_integrity(mesh):
 
 def test_mesh_printability(mesh, case_config):
 
-    test_mesh_integrity(mesh)
-    
+	test_mesh_integrity(mesh)
+
 	tr = context_manager.ResultsManager()
-    
+
 	min_dist = case_config.MIN_CHANNEL
-    
+
 	anz, points = mesh2mesh_distance(mesh, min_dist)
-    
+
 	tr.print_stats.anz_narrow_clusters = anz
-    tr.print_stats.face_centroids_narrow = points
-    
+	tr.print_stats.face_centroids_narrow = points
+
 	good = True
-    
+
 	if len(tr.validation_tests_stats.subtest_self_intersection) > 0:
-        good = False
+		good = False
 
-    if not tr.validation_tests_stats.subtest_has_no_outer_component:
-        good = False
+	if not tr.validation_tests_stats.subtest_has_no_outer_component:
+		good = False
 
-    for val in (
-        tr.validation_tests_stats.subtest_is_vertex_manifold,
-        tr.validation_tests_stats.subtest_is_edge_manifold,
-        tr.validation_tests_stats.subtest_is_oriented,
-    ):
-        if not val:
-            good = False
+	for val in (
+		tr.validation_tests_stats.subtest_is_vertex_manifold,
+		tr.validation_tests_stats.subtest_is_edge_manifold,
+		tr.validation_tests_stats.subtest_is_oriented,
+	):
+		if not val:
+			good = False
 
-    if (
-        tr.validation_tests_stats.subtest_has_no_degenerated_triangle_angle
-        or tr.validation_tests_stats.subtest_has_no_degenerated_triangle_area
-    ):
-        good = False
+	if (
+		tr.validation_tests_stats.subtest_has_no_degenerated_triangle_angle
+		or tr.validation_tests_stats.subtest_has_no_degenerated_triangle_area
+	):
+		good = False
 		
-    if tr.print_stats.anz_narrow_clusters:
-        good = False
+	if tr.print_stats.anz_narrow_clusters:
+		good = False
 
-    tr.print_stats.is_mesh_ok = good
-    # radius = smoothing_tweaks.MIN_RADIUS_STOP_LAPLACIAN
-    # result["_stop_smoothing_radius"] = mesh.vertices[get_small_radii(mesh, radius)]
-    # radius = smoothing_tweaks.MIN_RADIUS_GROW
-    # radius = 1
-    # result["_grow_radius"] = mesh.vertices[get_small_radii(mesh, radius, percentage=.4, filter=3)]
-    tr.print_stats.non_hyperbolic = mesh.vertices[not_hyperbolic(mesh)]
+	tr.print_stats.is_mesh_ok = good
+	# radius = smoothing_tweaks.MIN_RADIUS_STOP_LAPLACIAN
+	# result["_stop_smoothing_radius"] = mesh.vertices[get_small_radii(mesh, radius)]
+	# radius = smoothing_tweaks.MIN_RADIUS_GROW
+	# radius = 1
+	# result["_grow_radius"] = mesh.vertices[get_small_radii(mesh, radius, percentage=.4, filter=3)]
+	tr.print_stats.non_hyperbolic = mesh.vertices[not_hyperbolic(mesh)]
+
+
+def calc_circumcenter(triangle):
+
+	a = triangle[0, ...]
+	b = triangle[1, ...]
+	c = triangle[2, ...]
+
+	aside = np.sqrt( (b[0]-c[0])**2.0 + (b[1]-c[1])**2.0 + (b[2]-c[2])**2.0 )
+	bside = np.sqrt( (c[0]-a[0])**2.0 + (c[1]-a[1])**2.0 + (c[2]-a[2])**2.0 )
+	cside = np.sqrt( (b[0]-a[0])**2.0 + (b[1]-a[1])**2.0 + (b[2]-a[2])**2.0 )
+
+	aa = a * aside**2.0 * (bside**2.0 + cside**2.0 - aside**2.0)
+	bb = b * bside**2.0 * (aside**2.0 + cside**2.0 - bside**2.0)
+	cc = c * cside**2.0 * (aside**2.0 + bside**2.0 - cside**2.0)
+	dd = 2.0 * ((aside * bside)**2.0 + (aside * cside)**2.0 + (bside * cside)**2.0) - (aside**4.0 + bside**4.0 + cside**4.0)
+
+	circumcenter = (aa + bb + cc) / dd
+
+	return circumcenter
+
+def calculate_circumcenter(triangles):
+
+	return np.asarray([calc_circumcenter(triangle) for triangle in triangles])	
 
 
 def split_solid_surface_along_surface(solid_surface, surface):
-    '''
-    Function splits the solid_surface into two parts:
-        - faces and vertices that have normals pointing in approximatly the same direction as the surfaces are added to one new mesh
-        - faces and vertices that have normals pointing in approximatly the opposite direction as the surface are added to another new mesh
-    ONLY WORKS PROPERLY ON BOUNDARY IF SURFACE CUTS THROUGH SOLID SURFACE
-    Args:
-        solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
-        surface {PyMesh Mesh}: "2d" triangulated mesh.
+	'''
+	Function splits the solid_surface into two parts:
+		- faces and vertices that have normals pointing in approximatly the same direction as the surfaces are added to one new mesh
+		- faces and vertices that have normals pointing in approximatly the opposite direction as the surface are added to another new mesh
+	ONLY WORKS PROPERLY ON BOUNDARY IF SURFACE CUTS THROUGH SOLID SURFACE
+	Args:
+		solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
+		surface {PyMesh Mesh}: "2d" triangulated mesh.
 
-    Returns:
-        Both new meshes
-    '''
-    # Compute face normals of meshes
-    solid_surface.add_attribute(pymesh_constants.FACE_NORMAL)
-    solid_surface.add_attribute(pymesh_constants.FACE_CIRCUMCENTER)
+	Returns:
+		Both new meshes
+	'''
+	# Compute face normals of meshes
+	solid_normals = solid_surface.face_normal
+	plane_normals = surface.face_normal
+	solid_face_circumcenters = calculate_circumcenter(solid_surface.triangles)
+	solid_circumcenters = calculate_circumcenter(surface.triangles)
 
-    surface.add_attribute(pymesh_constants.FACE_NORMAL)
-    surface.add_attribute(pymesh_constants.FACE_CIRCUMCENTER)
+	#squared_distances, face_indices, closest_points = pm.distance_to_mesh(surface, solid_face_circumcenters)
 
-    # Reshape to get dimensions: number of faces x 3
-    solid_face_dimensions = np.shape(solid_surface.faces)
+	#(closest_points, squared_distances, face_indices) = surface.nearest.on_surface(solid_face_circumcenters)
+	closest_points, squared_distances, face_indices = tri.proximity.closest_point(surface, solid_face_circumcenters)
 
-    solid_normals = np.reshape(solid_surface.get_attribute(pymesh_constants.FACE_NORMAL), solid_face_dimensions)
-    plane_normals = np.reshape(surface.get_attribute(pymesh_constants.FACE_NORMAL), np.shape(surface.faces))
-    solid_face_circumcenters = np.reshape(
-        solid_surface.get_attribute(pymesh_constants.FACE_CIRCUMCENTER), solid_face_dimensions
-    )
-    solid_circumcenters = np.reshape(surface.get_attribute(pymesh_constants.FACE_CIRCUMCENTER), np.shape(surface.faces))
+	top_side_faces = []
+	bottom_side_faces = []
+	for face in range(solid_face_dimensions[0]):
+		
+		vector_solid_surface_center_to_surface_center = (
+			solid_face_circumcenters[face] - solid_circumcenters[face_indices[face]]
+		)
+		
+		normal_scalar_product = (
+			vector_solid_surface_center_to_surface_center
+			/ np.linalg.norm(vector_solid_surface_center_to_surface_center)
+		).dot(plane_normals[face_indices[face]])
 
-    squared_distances, face_indices, closest_points = pm.distance_to_mesh(surface, solid_face_circumcenters)
+		if normal_scalar_product > 0:
+			top_side_faces.append(face)
+		elif normal_scalar_product < 0:
+			bottom_side_faces.append(face)
+		else:
+			# orthogonal
+			pass
 
-    top_side_faces = []
-    bottom_side_faces = []
-    for face in range(solid_face_dimensions[0]):
-        vector_solid_surface_center_to_surface_center = (
-            solid_face_circumcenters[face] - solid_circumcenters[face_indices[face]]
-        )
-        normal_scalar_product = (
-            vector_solid_surface_center_to_surface_center
-            / np.linalg.norm(vector_solid_surface_center_to_surface_center)
-        ).dot(plane_normals[face_indices[face]])
-        if normal_scalar_product > 0:
-            top_side_faces.append(face)
-        elif normal_scalar_product < 0:
-            bottom_side_faces.append(face)
-        else:
-            # orthogonal
-            pass
+	# extract submesh. The 0 means that no faces other than the saved indices are extracted.
+	#top = pm.submesh(solid_surface, top_side_faces, 0)
+	#bot = pm.submesh(solid_surface, bottom_side_faces, 0)
 
-    # extract submesh. The 0 means that no faces other than the saved indices are extracted.
-    top = pm.submesh(solid_surface, top_side_faces, 0)
-    bot = pm.submesh(solid_surface, bottom_side_faces, 0)
+	#top = solid_surface.submesh(top_side_faces, )
+	top = tri.util.submesh(solid_surface, top_side_faces)
+	bot = tri.util.submesh(solid_surface, bottom_side_faces)
 
-    return bot, top
+	return bot, top
 
 
 def compute_wall_thickness_at_sample_points(solid_surface, surface, sample_points):
-    '''
-    Args:
-        solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
-        surface {PyMesh Mesh}: "2d" triangulated mesh.
-        sample_points: Numpy List of sample points. Sample points should lay on surface (e.g. vertices, midpoints, ...)
-    Returns:
-        Numpy List of dimensions: "Number of sample_points" x 1
-    '''
-    bot, top = split_solid_surface_along_surface(solid_surface, surface)
+	'''
+	Args:
+		solid_surface {PyMesh Mesh}: Printable "3d" triangulated mesh.
+		surface {PyMesh Mesh}: "2d" triangulated mesh.
+		sample_points: Numpy List of sample points. Sample points should lay on surface (e.g. vertices, midpoints, ...)
+	Returns:
+		Numpy List of dimensions: "Number of sample_points" x 1
+	'''
+	bot, top = split_solid_surface_along_surface(solid_surface, surface)
 
-    # I guess it's up for discussion if the wall width should be measured orthogonally to the mid surface or shortest distance
-    squared_distances_up, _, _ = pm.distance_to_mesh(top, sample_points)
-    squared_distances_down, _, _ = pm.distance_to_mesh(bot, sample_points)
+	# I guess it's up for discussion if the wall width should be measured orthogonally to the mid surface or shortest distance
+	_, squared_distances_up, _ = tri.proximity.closest_point(top, sample_points)
+	_, squared_distances_down, _ = tri.proximity.closest_point(bot, sample_points)
 
-    distances_up = np.sqrt(squared_distances_up)
-    distances_down = np.sqrt(squared_distances_down)
+	distances_up = np.sqrt(squared_distances_up)
+	distances_down = np.sqrt(squared_distances_down)
 
-    return distances_down + distances_up
+	return distances_down + distances_up
 
 
 def test_wall_thickness(solid_surface, surface):
@@ -730,11 +753,11 @@ def test_wall_thickness(solid_surface, surface):
 
 
 def form_mesh(vertices, faces):
-    return pm.form_mesh(vertices, faces)
+    return tri.base.Trimesh(vertices, faces)
 
 
 def form_mesh_with_voxels(vertices, faces, voxels):
-    return pm.form_mesh(vertices, faces, voxels)
+    return tri.base.Trimesh(vertices, faces) 
 
 
 def remove_isolated_vertices(mesh):
@@ -821,3 +844,4 @@ mesh = load_mesh_trimesh(filename)
 #print( integrate(mesh, time_step=0.1, L=0.1) )
 #print(is_valid_mesh(mesh))
 #get_narrow_tunnels(mesh, 1.0, tree=None)
+print( dir(mesh.voxelized) )
