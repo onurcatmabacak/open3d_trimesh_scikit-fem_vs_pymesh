@@ -844,4 +844,14 @@ mesh = load_mesh_trimesh(filename)
 #print( integrate(mesh, time_step=0.1, L=0.1) )
 #print(is_valid_mesh(mesh))
 #get_narrow_tunnels(mesh, 1.0, tree=None)
-print( dir(mesh.voxelized) )
+
+V = mesh.vertices
+F = mesh.faces
+import wildmeshing as wm
+tetra = wm.Tetrahedralizer(stop_quality=1000)
+tetra.set_mesh(V, F)
+tetra.tetrahedralize()
+VT, TT, _ = tetra.get_tet_mesh()
+
+block = "\n\n\n ############################################################### \n\n\n"
+print(mesh.vertices, block, mesh.triangles, block, VT, block, TT)
