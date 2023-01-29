@@ -4,6 +4,7 @@ import numpy as np
 import scipy
 import networkx as nx
 from math import *
+import wildmeshing as wm
 
 def load_mesh_trimesh(filename):
 
@@ -761,26 +762,45 @@ def form_mesh_with_voxels(vertices, faces, voxels):
 
 
 def remove_isolated_vertices(mesh):
-    return pm.remove_isolated_vertices(mesh)
+    return mesh.remove_unreferenced_vertices()
+
+def remove_isolated_faces(mesh):
+
+	cc = tri.graph.connected_components(mesh.face_adjacency, min_len=3)
+	mask = np.zeros(len(mesh.faces), dtype=np.bool)
+	mask[np.concatenate(cc)] = True
+	mesh.update_faces(mask)
+	return mesh
+
+def remove_duplicated_faces(mesh):
+    return mesh.remove_duplicated_faces()
 
 
-def remove_duplicated_faces(mesh, fins_only):
-    return pm.remove_duplicated_faces(mesh, fins_only=fins_only)
+def remove_duplicated_vertices(mesh):
+    return mesh.merge_vertices(merge_tex=True, merge_norm=True)
 
+def repair_mesh(mesh):
 
-def remove_duplicated_vertices(mesh, tol=1e-12, importance=None):
-    return pm.remove_duplicated_vertices(mesh, tol=tol, importance=importance)
-
+	mesh = tri.repair.broken_faces(mesh, color=None)
+	mesh = tri.repair.fill_holes(mesh)
+	mesh = tri.repair.fix_inversion(mesh, multibody=False)
+	mesh = tri.repair.fix_normals(mesh, multibody=False)
+	mesh = tri.repair.fix_winding(mesh)
+	mesh = tri.repair.stitch(mesh, faces=None, insert_vertices=False)
+	return mesh
 
 def collapse_short_edges(mesh, eps):
+	# check the bookmark
     return pm.collapse_short_edges(mesh, eps)
 
 
 def remove_obtuse_triangles(mesh, max_angle):
+	# try remove degenerate triangle code
     return pm.remove_obtuse_triangles(mesh, max_angle=max_angle)
 
 
 def remove_degenerated_triangles(mesh, n):
+	# check bookmark
     return pm.remove_degenerated_triangles(mesh, n)
 
 
@@ -793,15 +813,18 @@ def save_mesh(filepath, mesh):
 
 
 def tetgen():
-    return pm.tetgen()
+	return wm.Tetrahedralizer(stop_quality=1000)
 
 
 def detect_self_intersection(mesh):
-    return pm.detect_self_intersection(mesh)
+	return np.asarray(mesh.as_open3d.get_self_intersecting_triangles())
+    #return pm.detect_self_intersection(mesh)
 
 
 def separate_mesh(mesh, connectivity_type="auto"):
-    return pm.separate_mesh(mesh, connectivity_type="auto")
+	# engines: networkx and scipy
+	return tri.graph.split(mesh, only_watertight=True, adjacency=None, engine=None)
+    #return pm.separate_mesh(mesh, connectivity_type="auto")
 
 
 def pymesh_mesh():
@@ -847,11 +870,12 @@ mesh = load_mesh_trimesh(filename)
 
 V = mesh.vertices
 F = mesh.faces
-import wildmeshing as wm
-tetra = wm.Tetrahedralizer(stop_quality=1000)
+tetra = tetgen()
 tetra.set_mesh(V, F)
 tetra.tetrahedralize()
 VT, TT, _ = tetra.get_tet_mesh()
 
 block = "\n\n\n ############################################################### \n\n\n"
-print(mesh.vertices, block, mesh.triangles, block, VT, block, TT)
+print(mesh.vertices, block, mesh.faces, block, VT, block, TT)
+
+if np.asarray([158, 175, 138, 13778]) in TT: print("yes ")
