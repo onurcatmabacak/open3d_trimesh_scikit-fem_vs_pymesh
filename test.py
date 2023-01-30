@@ -88,6 +88,9 @@ def scikit_fem_triangle_rearrange(triangles):
 	
 	return np.asarray(mimi)
 	
+
+
+
 def get_boundary_face_indices(filename):
 
 	mesh = load_mesh_trimesh(filename)
@@ -308,7 +311,6 @@ def normalize_mesh(vertices, faces):
 	vertices /= np.amax(radii)
 	return form_mesh_trimesh(vertices, faces)
 
-
 def print2outershell(what):
 	sys.__stdout__.write(f"{what}\n")
 	sys.__stdout__.flush()
@@ -481,20 +483,72 @@ def translateHull(hull, translation):
 
 
 def rotateHull(hull, axis, angle, offset):
-    offset = np.array(offset)
-    axis = np.array(axis)
-    angle = radians(angle)
-    rot = tri.transformations.quaternion_about_axis(angle, axis)
-    rot = rot.to_matrix()
+	offset = np.array(offset)
+	axis = np.array(axis)
+	angle = radians(angle)
+	rot = tri.transformations.quaternion_about_axis(angle, axis)
+	rot = rot.to_matrix()
 
-    vertices = hull.vertices
-    bbox = hull.bounds
-    centroid = 0.5 * (bbox[0] + bbox[1])
-    vertices = np.dot(rot, (vertices - centroid).T).T + centroid + offset
+	vertices = hull.vertices
+	bbox = hull.bounds
+	centroid = 0.5 * (bbox[0] + bbox[1])
+	vertices = np.dot(rot, (vertices - centroid).T).T + centroid + offset
 
 	hull.vertices = vertices
 
-    return hull
+	return hull
+
+
+# # todo remove if possible
+# use repair_mesh instead of these half-baked functions
+# def fix_mesh(mesh, target_len: float = 0.1):
+#     ###target_leng high leads to non-manifold edges
+#     ###method is too slow to be of much value
+#     count = 0
+#     # mesh, __ = pm.remove_degenerated_triangles(mesh, 3)
+#     # mesh, __ = pm.remove_degenerated_triangles(mesh, 3)
+#     mesh, __ = collapse_short_edges(mesh, target_len)
+#     # mesh, __ = pm.remove_degenerated_triangles(mesh, 3)
+#     mesh, __ = remove_degenerated_triangles(mesh)
+
+#     mesh, __ = remove_duplicated_vertices(mesh)
+#     mesh = pm.resolve_self_intersection(mesh)
+#     # mesh, __ = pm.remove_duplicated_faces(mesh)
+#     # mesh, __ = pm.remove_duplicated_faces(mesh)
+#     # mesh = pm.resolve_self_intersection(mesh)
+#     # print(mesh.faces.shape)
+#     return mesh
+
+
+# def fix_mesh(mesh, target_len=1.2, num_it=10):
+#     logging.info("fix_mesh:target resolution: {} mm".format(target_len))
+#     count = 0
+#     try:
+#         mesh, __ = pm.remove_degenerated_triangles(mesh, 100)
+#     except Exception:
+#         logging.warning("remove degenerated failed")
+#     mesh, __ = pm.split_long_edges(mesh, target_len)
+#     num_vertices = mesh.number_of_vertices
+#     while True:
+#         mesh, __ = pm.collapse_short_edges(mesh, 1e-6)
+#         mesh, __ = pm.collapse_short_edges(mesh, target_len, preserve_feature=True)
+#         mesh, __ = pm.remove_obtuse_triangles(mesh, 150.0, 100)
+#         if mesh.number_of_vertices == num_vertices:
+#             break
+#         num_vertices = mesh.number_of_vertices
+#         logging.info("#v: {}".format(num_vertices))
+#         count += 1
+#         if count > num_it:
+#             break
+
+#     mesh = pm.resolve_self_intersection(mesh)
+#     mesh, __ = pm.remove_duplicated_faces(mesh)
+#     mesh = pm.compute_outer_hull(mesh)
+#     mesh, __ = pm.remove_duplicated_faces(mesh)
+#     mesh, __ = pm.remove_obtuse_triangles(mesh, 179.0, 5)
+#     mesh, __ = pm.remove_isolated_vertices(mesh)
+
+#     return mesh
 
 def is_valid_mesh(mesh):
 	# bounds = mesh.boundary_vertices
@@ -503,6 +557,157 @@ def is_valid_mesh(mesh):
 	#    return False
 	ints = np.asarray(mesh.as_open3d.get_self_intersecting_triangles()) 
 	return mesh.as_open3d.is_edge_manifold() and mesh.as_open3d.is_vertex_manifold() and len(ints) == 0
+
+
+
+def getVoxelDualGraph(mesh):
+    boundaryFaceCount = 0
+    importedGraph = nx.Graph(type="skeleton")
+
+    mesh.enable_connectivity()  # needed to avoid crash
+    mesh.add_attribute(pymesh_constants.VOXEL_CENTROID)
+    mesh.add_attribute(pymesh_constants.FACE_CENTROID)
+    voxel_centroids = mesh.get_voxel_attribute(pymesh_constants.VOXEL_CENTROID)
+    face_centroids = mesh.get_face_attribute(pymesh_constants.FACE_CENTROID)
+
+    for vc, voxel in enumerate(mesh.voxels):
+        adjacentVoxels = mesh.get_voxel_adjacent_voxels(vc)
+        x1, y1, z1 = voxel_centroids[vc]
+        for adjVoxel in adjacentVoxels:
+            x2, y2, z2 = voxel_centroids[adjVoxel]
+            if not importedGraph.has_node(vc):
+                importedGraph.add_node(vc, name=str(vc), x=x1, y=y1, z=z1, tile=False)
+            if not importedGraph.has_node(adjVoxel):
+                importedGraph.add_node(adjVoxel, name=str(adjVoxel), x=x2, y=y2, z=z2, tile=False)
+            if not importedGraph.has_edge(vc, adjVoxel):
+                importedGraph.add_edge(vc, adjVoxel)
+
+        boundaryFaces = mesh.get_voxel_adjacent_faces(vc)
+        for boundaryFace in boundaryFaces:
+            nodeId = mesh.num_voxels + boundaryFaceCount
+            xf, yf, zf = face_centroids[boundaryFace]
+            importedGraph.add_node(nodeId, name=str(nodeId), x=xf, y=yf, z=zf, tile=False)
+            importedGraph.add_edge(vc, nodeId)
+            boundaryFaceCount += 1
+    return [importedGraph.subgraph(g) for g in nx.connected_components(importedGraph)]
+
+
+def get_coplanar_faces(mesh, faceIndex: int):
+    """find all coplanar connected faces for the face given with "faceIndex"
+
+    Arguments:
+        mesh {pm.Mesh} -- The pymesh Mesh containing the faces
+        faceIndex {int} -- The index of the reference face
+
+    Returns:
+        List[int] -- A list of face indexes that are coplanar with the face given with "faceIndex"
+    """
+
+    mesh.enable_connectivity()
+    mesh.add_attribute(pymesh_constants.FACE_NORMAL)
+    faceNormals1D = mesh.get_attribute(pymesh_constants.FACE_NORMAL)
+    faceNormals = np.reshape(faceNormals1D, (len(mesh.faces), -1))
+
+    refNormal = faceNormals[faceIndex] / np.linalg.norm(faceNormals[faceIndex])
+
+    coplanarFaces = set()
+    checkedFaces = set()
+    uncheckedFaces = set()
+
+    uncheckedFaces.add(faceIndex)
+
+    while len(uncheckedFaces) > 0:
+        facesToCheck = set()
+        for face in uncheckedFaces:
+            if face not in checkedFaces:
+                adjFaces = mesh.get_face_adjacent_faces(face)
+                for adjFace in adjFaces:
+                    adjFaceNormal = faceNormals[adjFace] / np.linalg.norm(faceNormals[adjFace])
+                    if np.linalg.norm(adjFaceNormal - refNormal) < 0.01:
+                        coplanarFaces.add(adjFace)
+                        facesToCheck.add(adjFace)
+                    else:
+                        checkedFaces.add(adjFace)
+                checkedFaces.add(face)
+        uncheckedFaces = facesToCheck.copy()
+    return list(coplanarFaces)
+
+
+def get_scalefree_mean_curvature(mesh, scale=None):
+    if scale:
+        mesh = pm.form_mesh(scale * mesh.vertices, mesh.faces)
+    bounds = mesh.boundary_vertices
+    mesh.add_attribute(pymesh_constants.VERTEX_MEAN_CURVATURE)
+    h = mesh.get_attribute(pymesh_constants.VERTEX_MEAN_CURVATURE)
+    mesh.add_attribute(pymesh_constants.VERTEX_GAUSSIAN_CURVATURE)
+    g = mesh.get_attribute(pymesh_constants.VERTEX_GAUSSIAN_CURVATURE)
+
+    h = np.array(h)
+
+    def zero_nan(what):
+        which = np.where(np.isnan(what) == True)[0]
+        what[which] = 0
+        return len(which)
+
+    scaled_k = h / np.sqrt(np.abs(g))
+    scaled_k[bounds] = 0
+    nnan = zero_nan(scaled_k)
+    if nnan:
+        logging.info(f"#nans = {nnan}")
+    zero_nan(h)
+    h[bounds] = 0
+    scaled_k[bounds] = 0
+    return scaled_k
+
+
+def get_mean_curvature(mesh):
+    mesh.add_attribute(pymesh_constants.VERTEX_MEAN_CURVATURE)
+    h = mesh.get_attribute(pymesh_constants.VERTEX_MEAN_CURVATURE)
+    bounds = mesh.boundary_vertices
+    h = np.array(h)
+    h[bounds] = 0
+
+    def zero_nan(what):
+        which = np.where(np.isnan(what))[0]
+        print("nan ", which)
+        what[which] = 0
+        return len(which)
+
+    zero_nan(h)
+    return np.mean(np.abs(h))
+
+
+#
+# def replace_border_field(pm_mesh, field):
+#     bounds = pm_mesh.boundary_vertices
+#     pm_mesh.enable_connectivity()
+#     for vertex in bounds:
+#         neighbours = pm_mesh.get_vertex_adjacent_vertices(vertex)
+#         neighbours = [n for n in neighbours if not n in bounds]
+#         if len(neighbours) == 1:
+#             #n = neighbours[0]
+#             field[vertex] = 0#field[n]
+#         elif not neighbours:
+#             field[vertex] = 0
+#         else:
+#             pass
+#             #field[vertex] = field[neighbours].mean()
+
+
+def get_mean_vertex_curvature(p):
+    p.add_attribute(pymesh_constants.VERTEX_MEAN_CURVATURE)
+    mean = np.array(p.get_attribute("vertex_mean_curvature"))
+    bounds = p.boundary_vertices
+    mean[bounds] = 0
+    # replace_border_field(p, mean)
+    return np.nan_to_num(mean)
+
+
+def fix(mesh):
+    mesh, __ = pm.remove_duplicated_vertices(mesh)
+    mesh, __ = pm.remove_degenerated_triangles(mesh, 1)
+    return mesh
+
 
 def get_narrow_tunnels(mesh, min_dist: float, tree=None):
 
@@ -796,6 +1001,35 @@ def test_wall_thickness(solid_surface, surface):
     return wall_thickness
 
 
+def filter_normals(normals, mesh):
+    from neckpinch import get_all_neighbours
+
+    mesh.enable_connectivity()
+    result = np.zeros(normals.shape)
+    for i in range(len(result)):
+        neighbours = get_all_neighbours(mesh, i, 1)
+        a = np.mean(normals[neighbours])
+        result[i] = a
+    return result
+
+
+def get_normals_and_curvature(points, faces):
+    pm_mesh = pm.form_mesh(points, faces)
+    # pm_mesh, info = pm.remove_degenerated_triangles(pm_mesh, num_iterations=2)
+    pm_mesh.add_attribute("vertex_normal")
+    normals = pm_mesh.get_attribute("vertex_normal")
+    normals = normals.reshape(points.shape)
+    mesh_statistics(pm_mesh, False)
+    # for k in test:
+    #     if k[0] == '_':
+    #         continue
+    #     logging.info(f"{k},{test[k]}")
+    # normals = filter_normals(normals, pm_mesh)
+    # tr = context_manager.ResultsManager()
+    # absmean_q0p5= tr.absmean_q0p5
+    absmean_q0p5 = None
+    return normals, absmean_q0p5, pm_mesh
+
 
 def form_mesh(vertices, faces):
     return tri.base.Trimesh(vertices, faces)
@@ -837,30 +1071,30 @@ def collapse_short_edges(mesh, eps):
 	# check the bookmark, implement the following
 	"""
 	def collapse_short_edges(bm,obj,threshold=1.0):
-    ### collapse short edges
-    edges_len_average = 0
-    edges_count = 0
-    shortest_edge = 10000
-    for edge in bm.edges:
-        if True:
-            edges_count += 1
-            length = edge.calc_length()
-            edges_len_average += length
-            if length < shortest_edge:
-                shortest_edge = length
-    edges_len_average = edges_len_average/edges_count
+	### collapse short edges
+	edges_len_average = 0
+	edges_count = 0
+	shortest_edge = 10000
+	for edge in bm.edges:
+		if True:
+			edges_count += 1
+			length = edge.calc_length()
+			edges_len_average += length
+			if length < shortest_edge:
+				shortest_edge = length
+	edges_len_average = edges_len_average/edges_count
 
-    verts = []
-    for vert in bm.verts:
-        if not vert.is_boundary:
-            verts.append(vert)
-    bmesh.update_edit_mesh(obj.data)
-    
-    bmesh.ops.remove_doubles(bm,verts=verts,dist=edges_len_average*threshold)
+	verts = []
+	for vert in bm.verts:
+		if not vert.is_boundary:
+			verts.append(vert)
+	bmesh.update_edit_mesh(obj.data)
 
-    bmesh.update_edit_mesh(obj.data)
+	bmesh.ops.remove_doubles(bm,verts=verts,dist=edges_len_average*threshold)
+
+	bmesh.update_edit_mesh(obj.data)
 	"""
-    return 0 #pm.collapse_short_edges(mesh, eps)
+	return 0 #pm.collapse_short_edges(mesh, eps)
 
 
 def remove_obtuse_triangles(mesh, max_angle):
@@ -869,7 +1103,7 @@ def remove_obtuse_triangles(mesh, max_angle):
     #return pm.remove_obtuse_triangles(mesh, max_angle=max_angle)
 	return 0
 
-def remove_degenerated_triangles(mesh, n):
+def remove_degenerated_triangles(mesh):
 	# check bookmark
 	return mesh.process(validate=True, merge_tex=True, merge_norm=True)
 
@@ -897,6 +1131,23 @@ def detect_self_intersection(mesh):
 	return np.asarray(mesh.as_open3d.get_self_intersecting_triangles())
     #return pm.detect_self_intersection(mesh)
 
+# def resolve_self_intersection(mesh):
+
+# 	cc = detect_self_intersection(mesh)
+# 	mask = np.zeros(len(mesh.faces), dtype=np.bool)
+# 	mask[cc] = True
+# 	mesh.update_faces(mask)
+
+def voxel_centroid(mesh):
+
+	centroids = []
+
+	for voxel in mesh.voxels:
+		aa = np.asarray([mesh.vertices[v] for v in voxel])
+		centroids.append(np.sum(aa, axis=0)/4.0)
+		
+	print(np.asarray(centroids))
+	return np.asarray(centroids)
 
 def separate_mesh(mesh):
 	# engines: networkx and scipy
@@ -910,6 +1161,26 @@ def pymesh_mesh():
 
 def get_pymesh_stats(mesh):
     return context_manager.ResultsManager()
+
+
+def PyTMesh():
+    return pymeshfix._meshfix.PyTMesh()
+
+
+def submesh(pm_contour, faces_list, num_rings):
+    return pm.submesh(pm_contour, faces_list, num_rings)
+
+
+def wires_WireNetwork_create_from_data(vertices, edges):
+    return pm.wires.WireNetwork.create_from_data(vertices, edges)
+
+
+def wires_Inflator(wire_network):
+    return pm.wires.Inflator(wire_network)
+
+
+def MeshFix(points, faces):
+    return pymeshfix.meshfix.MeshFix(points, faces)
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -953,12 +1224,9 @@ tetra.tetrahedralize()
 VT, TT, _ = tetra.get_tet_mesh()
 
 mesh.voxels = TT
-print(dir(mesh))
-print(mesh.voxels)
 
-
-block = "\n\n\n ############################################################### \n\n\n"
-print(dir(tetra.get_tet_mesh()), block)
-#print(mesh.vertices, block, mesh.faces, block, VT, block, TT)
-
-#if np.asarray([158, 175, 138, 13778]) in TT: print("yes ")
+voxel_centroid(mesh)
+print(len(VT))
+print(len(TT))
+print(len(V))
+print(len(F))
