@@ -6,25 +6,6 @@ import networkx as nx
 from math import *
 import wildmeshing as wm
 
-def load_mesh_trimesh(filename):
-
-    return tri.load_mesh(filename)
-
-def load_mesh_open3d(filename):
-
-    return o3d.io.read_triangle_mesh(filename)
-
-def save_mesh_open3d(filename):
-
-    mesh = load_mesh_open3d(filename) 
-    o3d.io.write_triangle_mesh("bunny_saved_open3d.obj", mesh)
-    
-def save_mesh_trimesh(filename):
-    
-    mesh = load_mesh_trimesh(filename) 
-    trimesh.exchange.export.export_mesh(mesh, "bunny_saved_trimesh.obj",)
-
-
 def open3d_wireframe(filename):
 
     mesh = load_mesh_open3d(filename) 
@@ -377,6 +358,14 @@ def get_random_walk_laplacian(adjacency_matrix):
 
 	return random_walk_laplacian 
 
+def graph_laplacian(mesh):
+
+	graph = tri.graph.vertex_adjacency_graph(mesh)
+	adjacency_matrix = nx.adjacency_matrix(graph)
+	L = get_random_walk_laplacian(adjacency_matrix)
+
+	return L
+
 def integrate(mesh, time_step, L):
 
 	from scipy.sparse import linalg as sla
@@ -388,15 +377,8 @@ def integrate(mesh, time_step, L):
 	vertices = mesh.vertices
 	faces = mesh.faces
 
-	graph = tri.graph.vertex_adjacency_graph(mesh)
-	adjacency_matrix = nx.adjacency_matrix(graph)
-	#L = get_normalized_laplacian(adjacency_matrix)
-	L = get_random_walk_laplacian(adjacency_matrix)
-	print(L)
-	#quit()
 	_, M = computeAB(vertices, faces)
-	#L = fem_laplacian(vertices, faces, spectrum_size=mesh.vertices.shape[0]) #, normalization="area", verbose=False)
-	#L = csgraph.laplacian(vertices)
+	#L = graph_laplacian(mesh) #keep L constant
 
 	bbox_min, bbox_max = mesh.bounds
 	s = np.amax(bbox_max - bbox_min)  # why?
@@ -408,10 +390,10 @@ def integrate(mesh, time_step, L):
 
 	return vertices, mesh.faces
 
-# def get_vtk_curvature(mesh):
-#     vtk_mesh = wtv.tvtk_curvatures.get_poly_data_surface_with_curvatures(mesh.vertices, mesh.faces)
-#     scs = vtk_mesh.point_data.scalars
-#     return np.array(scs)
+def get_vtk_curvature(mesh):
+    vtk_mesh = wtv.tvtk_curvatures.get_poly_data_surface_with_curvatures(mesh.vertices, mesh.faces)
+    scs = vtk_mesh.point_data.scalars
+    return np.array(scs)
 
 def print_out_stat(what, ar):
 	s = "{} mean={} max={} >80%={} >99%={}".format(
@@ -451,6 +433,68 @@ def _modified_mean_curvature_flow(mesh, L, num_itrs=1, time_step=1e-3):
 				return mesh
 			continue
 	return result
+
+
+
+def conformalizedMCF2(mesh, num_steps, time_step=5e-3, L=None):
+    """
+    Calculates the conformlized mean curvature flow in num_step on the mesh (verts,faces)
+    :param pm_mesh:
+    :param num_steps: int
+    :param time_step: float
+    :return:
+    """
+
+    if L is None:
+        L = graph_laplacian(mesh)  # Should be Laplacian-Beltrami Matrix
+    result = _modified_mean_curvature_flow(mesh, L, num_itrs=num_steps, time_step=time_step)
+    mesh = result[-1]
+    return mesh, L
+
+
+def conformalizedMCF(verts, faces, num_steps, time_step=5e-3, L=None):
+    """
+    Calculates the conformlized mean curvature flow in num_step on the mesh (verts,faces)
+    :param verts: np.array
+    :param faces: np.array
+    :param num_steps: int
+    :param time_step: float
+    :return:
+    """
+    mesh = form_mesh_trimesh(verts, faces)
+    
+    if L is None:
+        L = graph_laplacian(mesh)  # Should be Laplacian-Beltrami Matrix
+    result = _modified_mean_curvature_flow(mesh, L, num_itrs=num_steps, time_step=time_step)
+    mesh = result[-1]
+    return wtv.tvtk_curvatures.get_poly_data_surface_with_curvatures(mesh.vertices, mesh.faces), L
+
+
+def translateHull(hull, translation):
+    # provide scale with array of x,y,z scale.
+    # Example: Scale factor 2 => [2,2,2]
+	# tetramesh is possible but a mesh with vertices, faces and voxels, I do not know.
+    #return 0 #pm.form_mesh(hull.vertices + translation, hull.faces, hull.voxels)
+	hull.vertices = hull.vertices + translation
+
+	return hull
+
+
+def rotateHull(hull, axis, angle, offset):
+    offset = np.array(offset)
+    axis = np.array(axis)
+    angle = radians(angle)
+    rot = tri.transformations.quaternion_about_axis(angle, axis)
+    rot = rot.to_matrix()
+
+    vertices = hull.vertices
+    bbox = hull.bounds
+    centroid = 0.5 * (bbox[0] + bbox[1])
+    vertices = np.dot(rot, (vertices - centroid).T).T + centroid + offset
+
+	hull.vertices = vertices
+
+    return hull
 
 def is_valid_mesh(mesh):
 	# bounds = mesh.boundary_vertices
@@ -790,27 +834,60 @@ def repair_mesh(mesh):
 	return mesh
 
 def collapse_short_edges(mesh, eps):
-	# check the bookmark
-    return pm.collapse_short_edges(mesh, eps)
+	# check the bookmark, implement the following
+	"""
+	def collapse_short_edges(bm,obj,threshold=1.0):
+    ### collapse short edges
+    edges_len_average = 0
+    edges_count = 0
+    shortest_edge = 10000
+    for edge in bm.edges:
+        if True:
+            edges_count += 1
+            length = edge.calc_length()
+            edges_len_average += length
+            if length < shortest_edge:
+                shortest_edge = length
+    edges_len_average = edges_len_average/edges_count
+
+    verts = []
+    for vert in bm.verts:
+        if not vert.is_boundary:
+            verts.append(vert)
+    bmesh.update_edit_mesh(obj.data)
+    
+    bmesh.ops.remove_doubles(bm,verts=verts,dist=edges_len_average*threshold)
+
+    bmesh.update_edit_mesh(obj.data)
+	"""
+    return 0 #pm.collapse_short_edges(mesh, eps)
 
 
 def remove_obtuse_triangles(mesh, max_angle):
-	# try remove degenerate triangle code
-    return pm.remove_obtuse_triangles(mesh, max_angle=max_angle)
-
+	# try remove degenerate triangle code with
+	# mesh_algos.fix_sharp_boundary_triangles(mesh, minimum_angle, boundary)
+    #return pm.remove_obtuse_triangles(mesh, max_angle=max_angle)
+	return 0
 
 def remove_degenerated_triangles(mesh, n):
 	# check bookmark
-    return pm.remove_degenerated_triangles(mesh, n)
-
+	return mesh.process(validate=True, merge_tex=True, merge_norm=True)
 
 def load_mesh(path):
-    return pm.load_mesh(path)
 
+    return tri.load_mesh(path)
 
+def load_mesh_open3d(filename):
+
+    return o3d.io.read_triangle_mesh(filename)
+
+def save_mesh_open3d(filename):
+
+    mesh = load_mesh_open3d(filename) 
+    o3d.io.write_triangle_mesh("bunny_saved_open3d.obj", mesh)
+    
 def save_mesh(filepath, mesh):
-    return pm.save_mesh(filepath, mesh)
-
+    return tri.exchange.export.export_mesh(mesh, filepath)
 
 def tetgen():
 	return wm.Tetrahedralizer(stop_quality=1000)
@@ -821,14 +898,14 @@ def detect_self_intersection(mesh):
     #return pm.detect_self_intersection(mesh)
 
 
-def separate_mesh(mesh, connectivity_type="auto"):
+def separate_mesh(mesh):
 	# engines: networkx and scipy
 	return tri.graph.split(mesh, only_watertight=True, adjacency=None, engine=None)
     #return pm.separate_mesh(mesh, connectivity_type="auto")
 
 
 def pymesh_mesh():
-    return pm.Mesh
+    return tri.base.Trimesh
 
 
 def get_pymesh_stats(mesh):
@@ -856,7 +933,7 @@ filename = "bunny.obj"
 #integrate(filename, time_step=0.5)
 
 # functions in wpm pymesh utils
-mesh = load_mesh_trimesh(filename)
+mesh = load_mesh(filename)
 #print( getHullStats(mesh.convex_hull) )
 #print( scaleHull(mesh.convex_hull, 2.0) )
 #vertex_curvature = vertex_gaussian_curvature(mesh, 1.0)
@@ -875,7 +952,13 @@ tetra.set_mesh(V, F)
 tetra.tetrahedralize()
 VT, TT, _ = tetra.get_tet_mesh()
 
-block = "\n\n\n ############################################################### \n\n\n"
-print(mesh.vertices, block, mesh.faces, block, VT, block, TT)
+mesh.voxels = TT
+print(dir(mesh))
+print(mesh.voxels)
 
-if np.asarray([158, 175, 138, 13778]) in TT: print("yes ")
+
+block = "\n\n\n ############################################################### \n\n\n"
+print(dir(tetra.get_tet_mesh()), block)
+#print(mesh.vertices, block, mesh.faces, block, VT, block, TT)
+
+#if np.asarray([158, 175, 138, 13778]) in TT: print("yes ")
