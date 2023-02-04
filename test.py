@@ -48,7 +48,7 @@ def convert_open3d_to_trimesh(mesh_open3d):
 	mesh_open3d.compute_vertex_normals()
 	mesh_open3d.compute_triangle_normals()
 	
-	print( np.asarray(mesh_open3d.vertex_normals), np.asarray(mesh_open3d.triangle_normals) )
+	#print( np.asarray(mesh_open3d.vertex_normals), np.asarray(mesh_open3d.triangle_normals) )
 	
 	mesh_tri = tri.base.Trimesh(vertices=np.asarray(mesh_open3d.vertices), faces=np.asarray(mesh_open3d.triangles), vertex_normals=np.asarray(mesh_open3d.vertex_normals), face_normals=np.asarray(mesh_open3d.triangle_normals))
 	return mesh_tri
@@ -632,6 +632,14 @@ def get_boundary_vertices(mesh):
 	indices = np.unique(mesh.edges[index].flatten())
 	return mesh.vertices[indices]
 
+def get_non_boundary_vertices(mesh):
+
+	index = tri.grouping.group_rows(mesh.edges_sorted, require_count=1)
+	indices = np.unique(mesh.edges[index].flatten())
+	mask = np.ones(len(mesh.edges), dtype=np.bool)
+	mask[indices] = False
+	return mesh.edges[mask == True]
+
 def get_scalefree_mean_curvature(mesh, scale=None):
     if scale:
         mesh = form_mesh(scale * mesh.vertices, mesh.faces)
@@ -1013,7 +1021,7 @@ def filter_normals(normals, mesh):
 
 
 def get_normals_and_curvature(points, faces):
-    pm_mesh = form_mesh(points, faces)
+    mesh = form_mesh(points, faces)
     # pm_mesh, info = pm.remove_degenerated_triangles(pm_mesh, num_iterations=2)
     normals = mesh.vertex_normals
     normals = normals.reshape(points.shape)
@@ -1034,8 +1042,8 @@ def form_mesh(vertices, faces):
 
 
 def form_mesh_with_voxels(vertices, faces, voxels):
-    mesh = tri.base.Trimesh(vertices, faces) 
-	mesh.voxels =  voxels
+	mesh = tri.base.Trimesh(vertices, faces) 
+	mesh.voxels = voxels
 	return mesh
 
 def remove_isolated_vertices(mesh):
@@ -1066,33 +1074,17 @@ def repair_mesh(mesh):
 	mesh = tri.repair.stitch(mesh, faces=None, insert_vertices=False)
 	return mesh
 
-def collapse_short_edges(mesh, eps):
+def collapse_short_edges(mesh, rel_threshold=0.1):
 	# check the bookmark, implement the following
 
 	### collapse short edges
-	edges_len_average = 0
-	edges_count = 0
-	shortest_edge = 10000
-	for edge in mesh.edges:
-		if True:
-			edges_count += 1
-			length = edge.calc_length()
-			edges_len_average += length
-			if length < shortest_edge:
-				shortest_edge = length
-	edges_len_average = edges_len_average/edges_count
-
-	verts = []
-	for vert in bm.verts:
-		if not vert.is_boundary:
-			verts.append(vert)
-	bmesh.update_edit_mesh(obj.data)
-
-	bmesh.ops.remove_doubles(bm,verts=verts,dist=edges_len_average*threshold)
-
-	bmesh.update_edit_mesh(obj.data)
-	
-	return 0 #pm.collapse_short_edges(mesh, eps)
+	edge_length = mesh.edges_unique_length
+	edges_len_average = np.mean(edge_length, axis=0)
+	shortest_edge = np.min(edge_length)
+	tol = edges_len_average * rel_threshold
+	collapsed_mesh_open3d = mesh.as_open3d.merge_close_vertices(tol)
+	collapsed_mesh_tri = convert_open3d_to_trimesh(collapsed_mesh_open3d)
+	return collapsed_mesh_tri
 
 
 def remove_obtuse_triangles(mesh, max_angle):
@@ -1103,7 +1095,9 @@ def remove_obtuse_triangles(mesh, max_angle):
 
 def remove_degenerated_triangles(mesh):
 	# check bookmark
-	return mesh.process(validate=True, merge_tex=True, merge_norm=True)
+	mesh_open3d = mesh.as_open3d.remove_degenerate_triangles()
+	mesh_tri = convert_open3d_to_trimesh(mesh_open3d)
+	return mesh_tri
 
 def load_mesh(path):
 
@@ -1156,29 +1150,21 @@ def separate_mesh(mesh):
 def pymesh_mesh():
     return tri.base.Trimesh
 
-
 def get_pymesh_stats(mesh):
     return context_manager.ResultsManager()
 
-
-def PyTMesh():
-    return pymeshfix._meshfix.PyTMesh()
-
-
-def submesh(pm_contour, faces_list, num_rings):
-    return pm.submesh(pm_contour, faces_list, num_rings)
+def submesh(mesh, faces_list):
+    return tri.util.submesh(mesh, faces_list)
+	#return pm.submesh(pm_contour, faces_list, num_rings)
 
 
-def wires_WireNetwork_create_from_data(vertices, edges):
-    return pm.wires.WireNetwork.create_from_data(vertices, edges)
+def wires_WireNetwork_create_from_data(mesh):
+    return tri.graph.vertex_adjacency_graph(mesh)
 
 
 def wires_Inflator(wire_network):
     return pm.wires.Inflator(wire_network)
 
-
-def MeshFix(points, faces):
-    return pymeshfix.meshfix.MeshFix(points, faces)
 
 filename = "bunny.obj"
 #save_mesh_open3d(filename)
@@ -1214,17 +1200,26 @@ mesh = load_mesh(filename)
 #print(is_valid_mesh(mesh))
 #get_narrow_tunnels(mesh, 1.0, tree=None)
 
-V = mesh.vertices
-F = mesh.faces
-tetra = tetgen()
-tetra.set_mesh(V, F)
-tetra.tetrahedralize()
-VT, TT, _ = tetra.get_tet_mesh()
+# V = mesh.vertices
+# F = mesh.faces
+# tetra = tetgen()
+# tetra.set_mesh(V, F)
+# tetra.tetrahedralize()
+# VT, TT, _ = tetra.get_tet_mesh()
 
-mesh.voxels = TT
+# mesh.voxels = TT
+# mesh.vertices = VT
 
-voxel_centroid(mesh)
-print(len(VT))
-print(len(TT))
-print(len(V))
-print(len(F))
+# voxel_centroid(mesh)
+# print(len(VT))
+# print(len(TT))
+# print(len(V))
+# print(len(F))
+# print(len(mesh.vertices))
+# wire_network = tri.graph.vertex_adjacency_graph(mesh)
+
+# print(len(wire_network.nodes))
+# thickness = tri.proximity.thickness(mesh, mesh.vertices)
+# print(thickness.size)
+# print(dir(thickness))
+
